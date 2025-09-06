@@ -1,0 +1,6 @@
+bin/
+out/
+build/
+*.o
+.DS_Store
+Thumbs.db
