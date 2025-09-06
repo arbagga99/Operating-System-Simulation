@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>OS Scheduler Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  :root { --grid: 24px; --pad: 10px; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial; }
+  body { margin: 0; padding: 20px; }
+  h1 { margin: 0 0 6px 0; font-size: 20px; }
+  .bar { height: 24px; border-radius: 4px; display: inline-block; margin-right: 1px; }
+  .lane { margin: 6px 0; display: flex; align-items: center; gap: 8px; }
+  .pid { width: 60px; text-align: right; color: #444; font-weight: 600; }
+  .track { position: relative; flex: 1; background: #f4f6f8; border-radius: 6px; height: 28px; overflow: hidden; }
+  .legend { display: flex; gap: 12px; margin: 10px 0 4px 0; align-items: center; flex-wrap: wrap; }
+  .tag { display: inline-flex; align-items: center; gap: 6px; }
+  .tag > span { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .RUN { background:#6aa9ff; }
+  .CS { background:#feb24c; }
+  .IDLE { background:#cfd8dc; }
+  table { border-collapse: collapse; margin-top: 14px; width: 100%; }
+  th,td { border: 1px solid #e1e5ea; padding: 6px 8px; font-size: 13px; }
+  th { background: #f9fafb; text-align: left; }
+  .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 10px 0; flex-wrap: wrap; }
+  input[type="number"]{ width:80px; }
+  .notice{font-size:12px;color:#666}
+</style>
+</head>
+<body>
+  <h1>OS Scheduler Dashboard</h1>
+  <div class="controls">
+    <button id="loadDefault">Load ./out CSVs</button>
+    <label>timeline.csv <input type="file" id="tlFile" accept=".csv"></label>
+    <label>metrics.csv <input type="file" id="mtFile" accept=".csv"></label>
+    <label>Zoom<input type="number" id="zoom" value="20" min="2" step="1"/>px/unit</label>
+  </div>
+  <div class="legend">
+    <div class="tag"><span class="RUN"></span>RUN (pid color)</div>
+    <div class="tag"><span class="CS"></span>Context Switch</div>
+    <div class="tag"><span class="IDLE"></span>Idle</div>
+    <div class="notice">Tip: Either click “Load ./out CSVs” (when served from a folder) or upload both CSVs manually.</div>
+  </div>
+  <div id="gantt"></div>
+  <h3>Per-process metrics</h3>
+  <div id="metrics"></div>
+<script>
+async function fetchText(url){ const r = await fetch(url); if(!r.ok) throw new Error("fetch failed"); return await r.text(); }
+function parseCSV(text){
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines.shift().split(",");
+  return lines.map(line=>{
+    const cols = line.split(",");
+    const obj={}; header.forEach((h,i)=>obj[h.trim()]=cols[i]?.trim());
+    return obj;
+  });
+}
+function colorForPid(pid){
+  // simple deterministic palette from pid
+  if(pid==='-'||pid===undefined) return "#cfd8dc";
+  const p = parseInt(pid,10);
+  const hues = [210, 10, 130, 270, 60, 320, 180, 30, 200, 100];
+  const h = hues[(p%hues.length)];
+  return `hsl(${h} 70% 60%)`;
+}
+function buildGantt(timeline, metrics, pxPerUnit){
+  const gantt = document.getElementById("gantt");
+  gantt.innerHTML = "";
+  // lanes per pid, plus one for IDLE/CS top
+  const pids = [...new Set(timeline.filter(e=>e.pid!=='-').map(e=>parseInt(e.pid,10)))].sort((a,b)=>a-b);
+  const maxT = Math.max(...timeline.map(e=>parseInt(e.end,10)));
+  // Top lane for IDLE/CS
+  const hdr = document.createElement("div"); hdr.className="lane";
+  hdr.innerHTML = `<div class="pid">All</div><div class="track"></div>`;
+  gantt.appendChild(hdr);
+  const hTrack = hdr.querySelector(".track");
+  timeline.forEach(e=>{
+    const s = parseInt(e.start,10), en = parseInt(e.end,10);
+    const w = Math.max(1,(en-s)*pxPerUnit), x = s*pxPerUnit;
+    const div = document.createElement("div");
+    div.className = "bar "+e.event;
+    div.style.background = (e.event==="RUN")? colorForPid(e.pid) : (e.event==="CS")? "#feb24c" : "#cfd8dc";
+    div.style.width = w+"px"; div.style.transform = `translateX(${x}px)`;
+    div.title = `${e.event} ${e.pid!=='-'?('pid='+e.pid+' '):''}[${s}→${en}]`;
+    div.style.position="absolute"; div.style.left="0"; div.style.top="2px"; div.style.height="24px";
+    hTrack.appendChild(div);
+  });
+  // Per-PID lanes
+  pids.forEach(pid=>{
+    const lane = document.createElement("div"); lane.className="lane";
+    lane.innerHTML = `<div class="pid">PID ${pid}</div><div class="track"></div>`;
+    gantt.appendChild(lane);
+    const track = lane.querySelector(".track");
+    timeline.filter(e=>e.event==="RUN" && parseInt(e.pid,10)===pid).forEach(e=>{
+      const s = parseInt(e.start,10), en = parseInt(e.end,10);
+      const w = Math.max(1,(en-s)*pxPerUnit), x = s*pxPerUnit;
+      const div = document.createElement("div");
+      div.className = "bar RUN";
+      div.style.background = colorForPid(e.pid);
+      div.style.width = w+"px"; div.style.transform = `translateX(${x}px)`;
+      div.title = `RUN pid=${e.pid} [${s}→${en}]`;
+      div.style.position="absolute"; div.style.left="0"; div.style.top="2px"; div.style.height="24px";
+      track.appendChild(div);
+    });
+  });
+  // Metrics table
+  const mDiv = document.getElementById("metrics");
+  mDiv.innerHTML = "";
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr><th>pid</th><th>waiting</th><th>turnaround</th><th>response</th><th>arrival</th><th>burst</th><th>finish</th></tr></thead>`;
+  const tb = document.createElement("tbody");
+  metrics.sort((a,b)=>parseInt(a.pid,10)-parseInt(b.pid,10)).forEach(r=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.pid}</td><td>${r.waiting}</td><td>${r.turnaround}</td><td>${r.response}</td><td>${r.arrival}</td><td>${r.burst}</td><td>${r.finish}</td>`;
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb); mDiv.appendChild(table);
+  // Resize container width
+  document.querySelectorAll(".track").forEach(t=>t.style.minWidth = (maxT*pxPerUnit+10)+"px");
+}
+async function loadDefault(){
+  const [tl, mt] = await Promise.all([fetchText("../out/timeline.csv"), fetchText("../out/metrics.csv")]);
+  const timeline = parseCSV(tl);
+  const metrics  = parseCSV(mt);
+  buildGantt(timeline, metrics, parseInt(document.getElementById("zoom").value,10));
+}
+document.getElementById("loadDefault").onclick = () => loadDefault().catch(e=>alert("Could not load ../out/*.csv. Run the simulator first, and open this file from dashboards/ via a local server.\n\nOr upload the CSVs using the file inputs."));
+document.getElementById("zoom").onchange = () => {
+  if(window.__tl && window.__mt) buildGantt(window.__tl, window.__mt, parseInt(document.getElementById("zoom").value,10));
+};
+function readFileAsText(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsText(f); }); }
+async function handleUploads(){
+  const tlF = document.getElementById("tlFile").files[0];
+  const mtF = document.getElementById("mtFile").files[0];
+  if(!tlF || !mtF){ alert("Please choose both CSV files."); return; }
+  const [tlT, mtT] = await Promise.all([readFileAsText(tlF), readFileAsText(mtF)]);
+  const tl = parseCSV(tlT), mt = parseCSV(mtT);
+  window.__tl = tl; window.__mt = mt;
+  buildGantt(tl, mt, parseInt(document.getElementById("zoom").value,10));
+}
+document.getElementById("tlFile").addEventListener("change", handleUploads);
+document.getElementById("mtFile").addEventListener("change", handleUploads);
+</script>
+</body>
+</html>
