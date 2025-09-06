@@ -5,25 +5,31 @@
 <title>OS Scheduler Dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  :root { --grid: 24px; --pad: 10px; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial; }
-  body { margin: 0; padding: 20px; }
-  h1 { margin: 0 0 6px 0; font-size: 20px; }
-  .bar { height: 24px; border-radius: 4px; display: inline-block; margin-right: 1px; }
-  .lane { margin: 6px 0; display: flex; align-items: center; gap: 8px; }
-  .pid { width: 60px; text-align: right; color: #444; font-weight: 600; }
-  .track { position: relative; flex: 1; background: #f4f6f8; border-radius: 6px; height: 28px; overflow: hidden; }
-  .legend { display: flex; gap: 12px; margin: 10px 0 4px 0; align-items: center; flex-wrap: wrap; }
-  .tag { display: inline-flex; align-items: center; gap: 6px; }
-  .tag > span { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
-  .RUN { background:#6aa9ff; }
-  .CS { background:#feb24c; }
-  .IDLE { background:#cfd8dc; }
-  table { border-collapse: collapse; margin-top: 14px; width: 100%; }
-  th,td { border: 1px solid #e1e5ea; padding: 6px 8px; font-size: 13px; }
-  th { background: #f9fafb; text-align: left; }
-  .controls { display:flex; gap:10px; align-items:center; margin: 8px 0 10px 0; flex-wrap: wrap; }
+  :root { --pad: 16px; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial; }
+  body { margin:0; padding:var(--pad); background:#fff; color:#111; }
+  h1 { margin:0 0 6px 0; font-size: 20px; }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin: 8px 0 10px; }
   input[type="number"]{ width:80px; }
+  .legend { display:flex; gap:12px; margin:10px 0 6px; align-items:center; flex-wrap:wrap; }
+  .tag { display:inline-flex; align-items:center; gap:6px; }
+  .tag > span { width:14px; height:14px; border-radius:3px; display:inline-block; }
+  .RUN { background:#6aa9ff; }
+  .CS  { background:#feb24c; }
+  .IDLE{ background:#cfd8dc; }
   .notice{font-size:12px;color:#666}
+  .lane { margin: 6px 0; display:flex; align-items:center; gap:8px; }
+  .pid  { width:72px; text-align:right; color:#444; font-weight:600; }
+  .track { position:relative; flex:1; background:#f5f7fa; border-radius:6px; height:28px; overflow:hidden; }
+  .bar { height:24px; border-radius:4px; display:inline-block; margin-right:1px; }
+  table { border-collapse:collapse; margin-top: 14px; width:100%; }
+  th,td { border:1px solid #e1e5ea; padding:6px 8px; font-size:13px; }
+  th { background:#f9fafb; text-align:left; }
+  .section { margin-top: 18px; }
+  .row { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+  .card { border:1px solid #e8eaee; border-radius:10px; padding:12px; }
+  .small { font-size: 12px; color:#444; }
+  .ok { color:#0a7; font-weight:600; }
+  .bad{ color:#a11; font-weight:600; }
 </style>
 </head>
 <body>
@@ -32,113 +38,207 @@
     <button id="loadDefault">Load ./out CSVs</button>
     <label>timeline.csv <input type="file" id="tlFile" accept=".csv"></label>
     <label>metrics.csv <input type="file" id="mtFile" accept=".csv"></label>
-    <label>Zoom<input type="number" id="zoom" value="20" min="2" step="1"/>px/unit</label>
+    <label>summary.csv <input type="file" id="sumFile" accept=".csv"></label>
+    <label>Zoom<input type="number" id="zoom" value="20" min="2" step="1"/></label>
+    <button id="exportPng">Export Gantt as PNG</button>
   </div>
+
   <div class="legend">
     <div class="tag"><span class="RUN"></span>RUN (pid color)</div>
     <div class="tag"><span class="CS"></span>Context Switch</div>
     <div class="tag"><span class="IDLE"></span>Idle</div>
-    <div class="notice">Tip: Either click “Load ./out CSVs” (when served from a folder) or upload both CSVs manually.</div>
+    <div class="notice">Tip: Click “Load ./out CSVs” when serving the repo via a local server, or upload CSVs manually.</div>
   </div>
+
   <div id="gantt"></div>
-  <h3>Per-process metrics</h3>
-  <div id="metrics"></div>
+
+  <div class="section row">
+    <div class="card" style="flex:1; min-width:340px;">
+      <h3 style="margin:0 0 8px 0;">Per-process metrics</h3>
+      <div id="metrics"></div>
+    </div>
+    <div class="card" style="flex:1; min-width:340px;">
+      <h3 style="margin:0 0 8px 0;">Algorithm summary (summary.csv)</h3>
+      <div id="summary"></div>
+      <div class="small">Use <code>scripts/RunAllAlgorithms.(sh|bat)</code> to generate <code>out/summary.csv</code> & <code>out/report.md</code>.</div>
+    </div>
+  </div>
+
 <script>
 async function fetchText(url){ const r = await fetch(url); if(!r.ok) throw new Error("fetch failed"); return await r.text(); }
 function parseCSV(text){
   const lines = text.trim().split(/\r?\n/);
-  const header = lines.shift().split(",");
-  return lines.map(line=>{
-    const cols = line.split(",");
-    const obj={}; header.forEach((h,i)=>obj[h.trim()]=cols[i]?.trim());
-    return obj;
+  const header = lines.shift().split(",").map(s=>s.trim());
+  return lines.filter(x=>x.trim()!=="").map(line=>{
+    const cols = line.split(","); const obj={};
+    header.forEach((h,i)=>obj[h]= (cols[i]??"").trim()); return obj;
   });
 }
 function colorForPid(pid){
-  // simple deterministic palette from pid
   if(pid==='-'||pid===undefined) return "#cfd8dc";
-  const p = parseInt(pid,10);
-  const hues = [210, 10, 130, 270, 60, 320, 180, 30, 200, 100];
-  const h = hues[(p%hues.length)];
+  const p=parseInt(pid,10);
+  const hues=[210,10,130,270,60,320,180,30,200,100,240,300,20,160,80];
+  const h=hues[p % hues.length];
   return `hsl(${h} 70% 60%)`;
 }
 function buildGantt(timeline, metrics, pxPerUnit){
-  const gantt = document.getElementById("gantt");
-  gantt.innerHTML = "";
-  // lanes per pid, plus one for IDLE/CS top
-  const pids = [...new Set(timeline.filter(e=>e.pid!=='-').map(e=>parseInt(e.pid,10)))].sort((a,b)=>a-b);
-  const maxT = Math.max(...timeline.map(e=>parseInt(e.end,10)));
-  // Top lane for IDLE/CS
-  const hdr = document.createElement("div"); hdr.className="lane";
-  hdr.innerHTML = `<div class="pid">All</div><div class="track"></div>`;
+  window.__tl = timeline; window.__mt = metrics; window.__ppu = pxPerUnit;
+  const gantt=document.getElementById("gantt"); gantt.innerHTML="";
+
+  const pids=[...new Set(timeline.filter(e=>e.pid!=='-').map(e=>parseInt(e.pid,10)))].sort((a,b)=>a-b);
+  const maxT=Math.max(...timeline.map(e=>parseInt(e.end,10)));
+
+  // Top lane
+  const hdr=document.createElement("div"); hdr.className="lane";
+  hdr.innerHTML=`<div class="pid">All</div><div class="track"></div>`;
   gantt.appendChild(hdr);
-  const hTrack = hdr.querySelector(".track");
+  const hTrack=hdr.querySelector(".track");
   timeline.forEach(e=>{
-    const s = parseInt(e.start,10), en = parseInt(e.end,10);
-    const w = Math.max(1,(en-s)*pxPerUnit), x = s*pxPerUnit;
-    const div = document.createElement("div");
-    div.className = "bar "+e.event;
-    div.style.background = (e.event==="RUN")? colorForPid(e.pid) : (e.event==="CS")? "#feb24c" : "#cfd8dc";
-    div.style.width = w+"px"; div.style.transform = `translateX(${x}px)`;
-    div.title = `${e.event} ${e.pid!=='-'?('pid='+e.pid+' '):''}[${s}→${en}]`;
-    div.style.position="absolute"; div.style.left="0"; div.style.top="2px"; div.style.height="24px";
+    const s=+e.start,en=+e.end,w=Math.max(1,(en-s)*pxPerUnit),x=s*pxPerUnit;
+    const div=document.createElement("div");
+    div.className="bar "+e.event;
+    div.style.background=(e.event==="RUN")?colorForPid(e.pid):(e.event==="CS")?"#feb24c":"#cfd8dc";
+    Object.assign(div.style,{position:"absolute",left:"0",top:"2px",height:"24px",transform:`translateX(${x}px)`,width:w+"px"});
+    div.title=`${e.event} ${e.pid!=='-'?('pid='+e.pid+' '):''}[${s}→${en}]`;
     hTrack.appendChild(div);
   });
-  // Per-PID lanes
+
+  // PID lanes
   pids.forEach(pid=>{
-    const lane = document.createElement("div"); lane.className="lane";
-    lane.innerHTML = `<div class="pid">PID ${pid}</div><div class="track"></div>`;
+    const lane=document.createElement("div"); lane.className="lane";
+    lane.innerHTML=`<div class="pid">PID ${pid}</div><div class="track"></div>`;
     gantt.appendChild(lane);
-    const track = lane.querySelector(".track");
-    timeline.filter(e=>e.event==="RUN" && parseInt(e.pid,10)===pid).forEach(e=>{
-      const s = parseInt(e.start,10), en = parseInt(e.end,10);
-      const w = Math.max(1,(en-s)*pxPerUnit), x = s*pxPerUnit;
-      const div = document.createElement("div");
-      div.className = "bar RUN";
-      div.style.background = colorForPid(e.pid);
-      div.style.width = w+"px"; div.style.transform = `translateX(${x}px)`;
-      div.title = `RUN pid=${e.pid} [${s}→${en}]`;
-      div.style.position="absolute"; div.style.left="0"; div.style.top="2px"; div.style.height="24px";
-      track.appendChild(div);
+    const track=lane.querySelector(".track");
+    timeline.filter(e=>e.event==="RUN" && +e.pid===pid).forEach(e=>{
+      const s=+e.start,en=+e.end,w=Math.max(1,(en-s)*pxPerUnit),x=s*pxPerUnit;
+      const div=document.createElement("div"); div.className="bar RUN";
+      Object.assign(div.style,{position:"absolute",left:"0",top:"2px",height:"24px",transform:`translateX(${x}px)`,width:w+"px",background:colorForPid(e.pid)});
+      div.title=`RUN pid=${e.pid} [${s}→${en}]`; track.appendChild(div);
     });
   });
+
+  document.querySelectorAll(".track").forEach(t=>t.style.minWidth=(maxT*pxPerUnit+10)+"px");
+
   // Metrics table
-  const mDiv = document.getElementById("metrics");
-  mDiv.innerHTML = "";
-  const table = document.createElement("table");
-  table.innerHTML = `<thead><tr><th>pid</th><th>waiting</th><th>turnaround</th><th>response</th><th>arrival</th><th>burst</th><th>finish</th></tr></thead>`;
-  const tb = document.createElement("tbody");
-  metrics.sort((a,b)=>parseInt(a.pid,10)-parseInt(b.pid,10)).forEach(r=>{
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.pid}</td><td>${r.waiting}</td><td>${r.turnaround}</td><td>${r.response}</td><td>${r.arrival}</td><td>${r.burst}</td><td>${r.finish}</td>`;
-    tb.appendChild(tr);
-  });
-  table.appendChild(tb); mDiv.appendChild(table);
-  // Resize container width
-  document.querySelectorAll(".track").forEach(t=>t.style.minWidth = (maxT*pxPerUnit+10)+"px");
+  const mDiv=document.getElementById("metrics"); mDiv.innerHTML="";
+  if(metrics && metrics.length){
+    const table=document.createElement("table");
+    table.innerHTML=`<thead><tr><th>pid</th><th>waiting</th><th>turnaround</th><th>response</th><th>arrival</th><th>burst</th><th>finish</th></tr></thead>`;
+    const tb=document.createElement("tbody");
+    metrics.sort((a,b)=>+a.pid-+b.pid).forEach(r=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${r.pid}</td><td>${r.waiting}</td><td>${r.turnaround}</td><td>${r.response}</td><td>${r.arrival}</td><td>${r.burst}</td><td>${r.finish}</td>`;
+      tb.appendChild(tr);
+    });
+    table.appendChild(tb); mDiv.appendChild(table);
+  }
 }
+
 async function loadDefault(){
   const [tl, mt] = await Promise.all([fetchText("../out/timeline.csv"), fetchText("../out/metrics.csv")]);
-  const timeline = parseCSV(tl);
-  const metrics  = parseCSV(mt);
+  const timeline=parseCSV(tl), metrics=parseCSV(mt);
   buildGantt(timeline, metrics, parseInt(document.getElementById("zoom").value,10));
 }
-document.getElementById("loadDefault").onclick = () => loadDefault().catch(e=>alert("Could not load ../out/*.csv. Run the simulator first, and open this file from dashboards/ via a local server.\n\nOr upload the CSVs using the file inputs."));
-document.getElementById("zoom").onchange = () => {
-  if(window.__tl && window.__mt) buildGantt(window.__tl, window.__mt, parseInt(document.getElementById("zoom").value,10));
-};
 function readFileAsText(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsText(f); }); }
 async function handleUploads(){
-  const tlF = document.getElementById("tlFile").files[0];
-  const mtF = document.getElementById("mtFile").files[0];
-  if(!tlF || !mtF){ alert("Please choose both CSV files."); return; }
-  const [tlT, mtT] = await Promise.all([readFileAsText(tlF), readFileAsText(mtF)]);
-  const tl = parseCSV(tlT), mt = parseCSV(mtT);
-  window.__tl = tl; window.__mt = mt;
-  buildGantt(tl, mt, parseInt(document.getElementById("zoom").value,10));
+  const tlF=document.getElementById("tlFile").files[0];
+  const mtF=document.getElementById("mtFile").files[0];
+  if(!tlF||!mtF){ alert("Please choose both timeline.csv and metrics.csv"); return; }
+  const [tlT,mtT]=await Promise.all([readFileAsText(tlF), readFileAsText(mtF)]);
+  const timeline=parseCSV(tlT), metrics=parseCSV(mtT);
+  buildGantt(timeline, metrics, parseInt(document.getElementById("zoom").value,10));
 }
+async function handleSummaryUpload(){
+  const f=document.getElementById("sumFile").files[0];
+  if(!f){ return; }
+  const txt=await readFileAsText(f);
+  const rows=parseCSV(txt);
+  const sumDiv=document.getElementById("summary"); sumDiv.innerHTML="";
+  if(!rows.length){ sumDiv.textContent="No rows."; return; }
+  const table=document.createElement("table");
+  table.innerHTML=`<thead><tr>
+    <th>Algo</th><th>Avg Waiting</th><th>Avg Turnaround</th><th>Avg Response</th>
+    <th>CPU Util</th><th>Throughput</th><th>Makespan</th></tr></thead>`;
+  const tb=document.createElement("tbody");
+  rows.forEach(r=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${r.algo}</td>
+      <td>${(+r.avg_waiting).toFixed(3)}</td>
+      <td>${(+r.avg_turnaround).toFixed(3)}</td>
+      <td>${(+r.avg_response).toFixed(3)}</td>
+      <td>${(+r.cpu_utilization).toFixed(3)}</td>
+      <td>${(+r.throughput).toFixed(3)}</td>
+      <td>${r.makespan}</td>`;
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb); sumDiv.appendChild(table);
+}
+
+/* ---------- PNG Export: draw bars to a canvas ---------- */
+function exportPNG(){
+  if(!window.__tl){ alert("Load timeline/metrics first."); return; }
+  const tl = window.__tl, ppu = window.__ppu || 20;
+  const pids=[...new Set(tl.filter(e=>e.pid!=='-').map(e=>parseInt(e.pid,10)))].sort((a,b)=>a-b);
+  const maxT=Math.max(...tl.map(e=>parseInt(e.end,10)));
+
+  const laneH=28, gap=8, leftW=80, topPad=30, rightPad=20, bottomPad=20;
+  const lanes = 1 + pids.length; // All + per-pid
+  const W = leftW + maxT*ppu + rightPad;
+  const H = topPad + lanes*(laneH+gap) + bottomPad;
+
+  const c=document.createElement("canvas"); c.width=W; c.height=H;
+  const g=c.getContext("2d");
+  g.fillStyle="#fff"; g.fillRect(0,0,W,H);
+  g.font="12px system-ui, sans-serif"; g.fillStyle="#111";
+  g.fillText("Gantt Timeline", 10, 16);
+
+  function drawTrack(y){ g.fillStyle="#f5f7fa"; g.strokeStyle="#e1e5ea";
+    g.fillRect(leftW,y,leftW+maxT*ppu-leftW,laneH); g.strokeRect(leftW,y,leftW+maxT*ppu-leftW,laneH);
+  }
+  function drawBars(events, y, pidFilter){ 
+    events.forEach(e=>{
+      const s=+e.start,en=+e.end,ev=e.event,pid=e.pid;
+      if(pidFilter!==null && !(ev==="RUN" && +pid===pidFilter)) return;
+      const x=leftW+s*ppu, w=(en-s)*ppu;
+      g.fillStyle=(ev==="RUN")?colorForPid(pid):(ev==="CS")?"#feb24c":"#cfd8dc";
+      g.fillRect(x, y+2, Math.max(1,w), laneH-4);
+    });
+  }
+
+  // Axis ticks
+  g.strokeStyle="#ddd";
+  for(let t=0;t<=maxT;t+=1){
+    const x = leftW + t*ppu;
+    g.beginPath(); g.moveTo(x, topPad-4); g.lineTo(x, H-bottomPad); g.stroke();
+    if(t % Math.ceil(50/ppu)===0){ g.fillStyle="#666"; g.fillText(String(t), x-3, topPad-8); }
+  }
+
+  // All lane
+  let y = topPad;
+  drawTrack(y);
+  g.fillStyle="#444"; g.fillText("All", leftW-10, y+18);
+  drawBars(tl, y, null);
+
+  // Per-PID lanes
+  pids.forEach(pid=>{
+    y += laneH + gap;
+    drawTrack(y);
+    g.fillStyle="#444"; g.fillText("PID "+pid, 10, y+18);
+    drawBars(tl, y, pid);
+  });
+
+  const a=document.createElement("a");
+  a.download="gantt.png";
+  a.href=c.toDataURL("image/png");
+  a.click();
+}
+
+document.getElementById("loadDefault").onclick = () => loadDefault().catch(()=>alert("Could not load ../out/*.csv. Serve repo with a local server or upload CSVs manually."));
+document.getElementById("zoom").onchange = () => { if(window.__tl && window.__mt) buildGantt(window.__tl, window.__mt, parseInt(document.getElementById("zoom").value,10)); };
 document.getElementById("tlFile").addEventListener("change", handleUploads);
 document.getElementById("mtFile").addEventListener("change", handleUploads);
+document.getElementById("sumFile").addEventListener("change", handleSummaryUpload);
+document.getElementById("exportPng").onclick = exportPNG;
 </script>
 </body>
 </html>
