@@ -2,10 +2,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
+#ifndef _WIN32
+  #include <sys/stat.h>
+#else
+  #include <direct.h>
+#endif
 
 static void usage(void){
-    fprintf(stderr, "Usage: os_sim -i <input.csv> -a <fcfs|rr> [-q <quantum>] [-cs <cost>] [-o <outdir>]\n");
+    fprintf(stderr, "Usage: os_sim -i <input.csv> -a <fcfs|rr|sjf|srtf|prio> [-q <quantum>] [-cs <cost>] [-o <outdir>]\n");
 }
 
 static void ensure_dir(const char *path){
@@ -48,13 +52,17 @@ int main(int argc, char **argv){
     SimConfig cfg = { .context_switch_cost = cs, .quantum = quantum, .algo = algo };
     SimSummary s;
 
-    if (!strcmp(algo,"fcfs")) s = simulate_fcfs(ps, n, cfg, tf, mf);
-    else if (!strcmp(algo,"rr")) s = simulate_rr(ps, n, cfg, tf, mf);
-    else { fprintf(stderr, "Unknown algo: %s\n", algo); fclose(tf); fclose(mf); return 4; }
+    if      (!strcmp(algo,"fcfs")) s = simulate_fcfs(ps, n, cfg, tf, mf);
+    else if (!strcmp(algo,"rr"))   s = simulate_rr  (ps, n, cfg, tf, mf);
+    else if (!strcmp(algo,"sjf"))  s = simulate_sjf (ps, n, cfg, tf, mf);
+    else if (!strcmp(algo,"srtf")) s = simulate_srtf(ps, n, cfg, tf, mf);
+    else if (!strcmp(algo,"prio")) s = simulate_prio(ps, n, cfg, tf, mf);
+    else { fprintf(stderr, "Unknown algo: %s\n", algo); fclose(tf); fclose(mf); free(ps); return 4; }
 
     fclose(tf); fclose(mf);
 
     printf("== Summary ==\n");
+    printf("Algo        : %s\n", algo);
     printf("Processes   : %d\n", n);
     printf("Makespan    : %d\n", s.total_time);
     printf("CPU Util    : %.3f\n", s.cpu_utilization);
